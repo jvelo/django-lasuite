@@ -200,6 +200,94 @@ def test_get_or_create_user_custom_creation_backend(resource_server_backend, set
     assert len(responses.calls) == 0
 
 
+class RefusingBackend(ResourceServerBackend):
+    """Resource Server backend that never creates users."""
+
+    def can_create_user(self, payload):
+        """Refuse the creation of any user."""
+        return False
+
+
+class AudienceBackend(ResourceServerBackend):
+    """Resource Server backend that creates users only for an allowed audience."""
+
+    def can_create_user(self, payload):
+        """Allow the creation only for the "allowed" audience."""
+        return self.token_origin_audience == "allowed" and super().can_create_user(payload)
+
+
+@responses.activate
+def test_get_or_create_user_hook_refuses(resource_server_backend):  # pylint: disable=unused-argument
+    """A hook that refuses creates no user and does not request the userinfo endpoint."""
+    backend = RefusingBackend()
+
+    user = backend.get_or_create_user("token", None, {"sub": "new-sub"})
+
+    assert user is None
+    assert User.objects.count() == 0
+    assert len(responses.calls) == 0
+
+
+@responses.activate
+def test_get_or_create_user_hook_allowed_audience(resource_server_backend):  # pylint: disable=unused-argument
+    """A hook on the audience creates the user for an allowed audience."""
+    responses.add(
+        responses.GET,
+        USERINFO_ENDPOINT,
+        json={"sub": "new-sub", "email": "john@example.com"},
+    )
+    backend = AudienceBackend()
+    backend.token_origin_audience = "allowed"
+
+    user = backend.get_or_create_user("token", None, {"sub": "new-sub"})
+
+    assert user.sub == "new-sub"
+    assert User.objects.count() == 1
+
+
+@responses.activate
+def test_get_or_create_user_hook_other_audience(resource_server_backend):  # pylint: disable=unused-argument
+    """A hook on the audience creates no user for another audience."""
+    backend = AudienceBackend()
+    backend.token_origin_audience = "other"
+
+    user = backend.get_or_create_user("token", None, {"sub": "new-sub"})
+
+    assert user is None
+    assert User.objects.count() == 0
+    assert len(responses.calls) == 0
+
+
+@responses.activate
+def test_get_or_create_user_hook_keeps_setting(resource_server_backend, settings):  # pylint: disable=unused-argument
+    """A hook that calls super() creates no user without OIDC_RS_CREATE_USER."""
+    settings.OIDC_RS_CREATE_USER = False
+    backend = AudienceBackend()
+    backend.token_origin_audience = "allowed"
+
+    user = backend.get_or_create_user("token", None, {"sub": "new-sub"})
+
+    assert user is None
+    assert User.objects.count() == 0
+    assert len(responses.calls) == 0
+
+
+@responses.activate
+def test_get_or_create_user_hook_not_called_for_existing_user(resource_server_backend, monkeypatch):
+    """The hook is not called when a user matches the introspected sub."""
+    existing_user = UserFactory(sub="known-sub")
+
+    def fail(payload):
+        raise AssertionError("can_create_user must not be called")
+
+    monkeypatch.setattr(resource_server_backend, "can_create_user", fail)
+
+    user = resource_server_backend.get_or_create_user("token", None, {"sub": "known-sub"})
+
+    assert user == existing_user
+    assert len(responses.calls) == 0
+
+
 EVENTS = []
 
 
