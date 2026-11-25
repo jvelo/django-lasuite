@@ -22,6 +22,10 @@ and this project adheres to
 
 - ➖(project) drop tox and rely on the CI for versions compatibility checks
 
+### Fixed
+
+- 🐛(oidc-rs) return the user that a parallel first call created
+
 ## [1.1.0] - 2026-11-18
 
 ### Added

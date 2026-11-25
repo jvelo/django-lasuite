@@ -5,8 +5,10 @@ import contextlib
 import pytest
 import responses
 from django.contrib.auth import get_user_model
-from django.core.exceptions import SuspiciousOperation
+from django.core.exceptions import SuspiciousOperation, ValidationError
+from django.db import IntegrityError
 
+from lasuite.oidc_login.backends import OIDCAuthenticationBackend
 from lasuite.oidc_resource_server import backend as backend_module
 from lasuite.oidc_resource_server.backend import ResourceServerBackend
 from tests.factories import UserFactory
@@ -198,6 +200,89 @@ def test_get_or_create_user_custom_creation_backend(resource_server_backend, set
     assert user.sub == "new-sub"
     assert user.email == "dummy@example.com"
     assert len(responses.calls) == 0
+
+
+def hide_existing_user(backend, monkeypatch):
+    """
+    Hide the existing users from the lookups that come before the creation.
+
+    The first lookup of the resource server backend and the lookup of the creation
+    backend find no user. This is what happens when a parallel request creates
+    the user between these lookups and the creation.
+    """
+    original_get_user = backend.get_user
+    lookups = []
+
+    def get_user_hidden_once(access_token, id_token, payload):
+        lookups.append(payload["sub"])
+        if len(lookups) == 1:
+            return None
+        return original_get_user(access_token, id_token, payload)
+
+    monkeypatch.setattr(backend, "get_user", get_user_hidden_once)
+    monkeypatch.setattr(OIDCAuthenticationBackend, "get_existing_user", lambda *args: None)
+
+
+@responses.activate
+def test_get_or_create_user_parallel_creation_integrity_error(resource_server_backend, monkeypatch):
+    """A user created by a parallel request makes the insert fail: that user is returned."""
+    existing_user = UserFactory(sub="new-sub", email="john@example.com")
+    hide_existing_user(resource_server_backend, monkeypatch)
+    responses.add(
+        responses.GET,
+        USERINFO_ENDPOINT,
+        json={"sub": "new-sub", "email": "john@example.com"},
+    )
+
+    user = resource_server_backend.get_or_create_user("token", None, {"sub": "new-sub"})
+
+    assert user == existing_user
+    assert User.objects.count() == 1
+
+
+@responses.activate
+def test_get_or_create_user_parallel_creation_validation_error(resource_server_backend, monkeypatch):
+    """A user model that validates in save() raises a ValidationError: the other user is returned."""
+    existing_user = UserFactory(sub="new-sub", email="john@example.com")
+    hide_existing_user(resource_server_backend, monkeypatch)
+    original_save = User.save
+
+    def save_with_validation(self, *args, **kwargs):
+        self.full_clean()
+        original_save(self, *args, **kwargs)
+
+    monkeypatch.setattr(User, "save", save_with_validation)
+    responses.add(
+        responses.GET,
+        USERINFO_ENDPOINT,
+        json={"sub": "new-sub", "email": "john@example.com"},
+    )
+
+    user = resource_server_backend.get_or_create_user("token", None, {"sub": "new-sub"})
+
+    assert user == existing_user
+    assert User.objects.count() == 1
+
+
+@pytest.mark.parametrize("error_class", [IntegrityError, ValidationError])
+@responses.activate
+def test_get_or_create_user_creation_error_without_user(resource_server_backend, monkeypatch, error_class):
+    """A creation error is raised again when no user with the introspected sub exists."""
+
+    def create_user_error(*args):
+        raise error_class("creation failed")
+
+    monkeypatch.setattr(OIDCAuthenticationBackend, "create_user", create_user_error)
+    responses.add(
+        responses.GET,
+        USERINFO_ENDPOINT,
+        json={"sub": "new-sub", "email": "john@example.com"},
+    )
+
+    with pytest.raises(error_class, match="creation failed"):
+        resource_server_backend.get_or_create_user("token", None, {"sub": "new-sub"})
+
+    assert User.objects.count() == 0
 
 
 EVENTS = []
