@@ -12,13 +12,25 @@ from django.utils.module_loading import import_string
 from django.utils.translation import gettext_lazy as _
 from mozilla_django_oidc.contrib.drf import OIDCAuthentication
 from mozilla_django_oidc.utils import parse_www_authenticate_header
-from requests.exceptions import HTTPError
+from requests.exceptions import ConnectionError as RequestsConnectionError
+from requests.exceptions import HTTPError, Timeout
 from rest_framework import exceptions
-from rest_framework.status import HTTP_401_UNAUTHORIZED
+from rest_framework.status import HTTP_401_UNAUTHORIZED, HTTP_503_SERVICE_UNAVAILABLE
 
 from .backend import ResourceServerBackend, ResourceServerImproperlyConfiguredBackend
 
 logger = logging.getLogger(__name__)
+
+# Errors of a request that gets no answer from the authorization server.
+AUTHORIZATION_SERVER_UNREACHABLE_ERRORS = (RequestsConnectionError, Timeout)
+
+
+class AuthorizationServerUnavailable(exceptions.APIException):
+    """The authorization server does not answer, so the access token cannot be checked."""
+
+    status_code = HTTP_503_SERVICE_UNAVAILABLE
+    default_detail = _("The authorization server is unavailable. Try again later.")
+    default_code = "authorization_server_unavailable"
 
 
 @cache
@@ -97,12 +109,18 @@ class ResourceServerAuthentication(OIDCAuthentication):
 
             # for all other http errors, just re-raise the exception.
             raise
+        except AUTHORIZATION_SERVER_UNREACHABLE_ERRORS as exc:
+            logger.warning("Authorization server is unavailable: %s", exc)
+            raise AuthorizationServerUnavailable from exc
 
         try:
             user = self.backend.get_or_create_user(access_token, None, user_info)
         except SuspiciousOperation as exc:
             logger.info("Login failed: %s", exc)
             raise exceptions.AuthenticationFailed("Login failed") from exc
+        except AUTHORIZATION_SERVER_UNREACHABLE_ERRORS as exc:
+            logger.warning("Authorization server is unavailable: %s", exc)
+            raise AuthorizationServerUnavailable from exc
 
         if not user:
             msg = "Login failed: No user found for the given access token."

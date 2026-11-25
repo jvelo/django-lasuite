@@ -22,6 +22,10 @@ and this project adheres to
 
 - ➖(project) drop tox and rely on the CI for versions compatibility checks
 
+### Fixed
+
+- 🐛(oidc-rs) answer 503 when the authorization server does not answer
+
 ## [1.1.0] - 2026-11-18
 
 ### Added

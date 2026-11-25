@@ -4,12 +4,18 @@ import base64
 import json
 
 import pytest
+import requests
 import responses
 from joserfc import jwe as jose_jwe
 from joserfc import jwt as jose_jwt
 from joserfc.jwk import RSAKey
 from rest_framework.request import Request as DRFRequest
-from rest_framework.status import HTTP_200_OK, HTTP_401_UNAUTHORIZED
+from rest_framework.status import (
+    HTTP_200_OK,
+    HTTP_400_BAD_REQUEST,
+    HTTP_401_UNAUTHORIZED,
+    HTTP_503_SERVICE_UNAVAILABLE,
+)
 
 from lasuite.oidc_resource_server.authentication import ResourceServerAuthentication, get_resource_server_backend
 from tests.factories import UserFactory
@@ -582,3 +588,129 @@ def test_jwt_resource_server_authentication_class_inactive_user(  # pylint: disa
     )
     assert response.status_code == HTTP_401_UNAUTHORIZED
     assert response.json()["detail"] == "Introspected user is not active"
+
+
+UNREACHABLE_ERRORS = [
+    pytest.param(requests.exceptions.ConnectionError("Connection refused"), id="connection-error"),
+    pytest.param(requests.exceptions.Timeout("Read timed out"), id="timeout"),
+]
+
+
+def set_resource_server_settings(settings):
+    """Configure the resource server to introspect tokens on oidc.example.com."""
+    settings.OIDC_RS_CLIENT_ID = "some_client_id"
+    settings.OIDC_RS_CLIENT_SECRET = "some_client_secret"
+
+    settings.OIDC_OP_URL = "https://oidc.example.com"
+    settings.OIDC_VERIFY_SSL = False
+    settings.OIDC_TIMEOUT = 5
+    settings.OIDC_PROXY = None
+    settings.OIDC_OP_JWKS_ENDPOINT = "https://oidc.example.com/jwks"
+    settings.OIDC_OP_INTROSPECTION_ENDPOINT = "https://oidc.example.com/introspect"
+    settings.OIDC_OP_USER_ENDPOINT = "https://oidc.example.com/userinfo"
+
+
+def assert_authorization_server_unavailable(response):
+    """Check that the response tells the caller to try again later."""
+    assert response.status_code == HTTP_503_SERVICE_UNAVAILABLE
+    assert response.json() == {"detail": "The authorization server is unavailable. Try again later."}
+
+
+@responses.activate
+@pytest.mark.parametrize("error", UNREACHABLE_ERRORS)
+def test_resource_server_authentication_class_introspection_unreachable(client, settings, caplog, error):
+    """The API answers 503 and logs a warning when the introspection request gets no answer."""
+    set_resource_server_settings(settings)
+    responses.add(responses.POST, "https://oidc.example.com/introspect", body=error)
+
+    response = client.get(
+        "/users/",
+        format="json",
+        HTTP_AUTHORIZATION=f"Bearer {build_authorization_bearer('some_token')}",
+    )
+
+    assert_authorization_server_unavailable(response)
+    assert ("WARNING", f"Authorization server is unavailable: {error}") in [
+        (record.levelname, record.getMessage()) for record in caplog.records
+    ]
+
+
+@responses.activate
+@pytest.mark.parametrize("error", UNREACHABLE_ERRORS)
+def test_resource_server_authentication_class_userinfo_unreachable(client, settings, error):
+    """With OIDC_RS_CREATE_USER, the API answers 503 when the userinfo request gets no answer."""
+    set_resource_server_settings(settings)
+    settings.OIDC_RS_CREATE_USER = True
+
+    responses.add(
+        responses.POST,
+        "https://oidc.example.com/introspect",
+        json={
+            "iss": "https://oidc.example.com",
+            "aud": "some_client_id",
+            "sub": "very-specific-sub",
+            "client_id": "some_service_provider",
+            "scope": "openid groups",
+            "active": True,
+        },
+    )
+    responses.add(responses.GET, "https://oidc.example.com/userinfo", body=error)
+
+    response = client.get(
+        "/users/",
+        format="json",
+        HTTP_AUTHORIZATION=f"Bearer {build_authorization_bearer('some_token')}",
+    )
+
+    assert_authorization_server_unavailable(response)
+
+
+@responses.activate
+@pytest.mark.parametrize("error", UNREACHABLE_ERRORS)
+def test_jwt_resource_server_authentication_class_jwks_unreachable(  # pylint: disable=unused-argument
+    client, jwt_resource_server_backend, settings, error
+):
+    """The API answers 503 when the JWKS request of the JWT backend gets no answer."""
+    set_resource_server_settings(settings)
+    private_key = RSAKey.generate_key(private=True)
+    settings.OIDC_RS_PRIVATE_KEY_STR = private_key.as_pem(private=True).decode()
+    settings.OIDC_RS_ENCRYPTION_KEY_TYPE = "RSA"
+    settings.OIDC_RS_ENCRYPTION_ENCODING = "A256GCM"
+    settings.OIDC_RS_ENCRYPTION_ALGO = "RSA-OAEP"
+    settings.OIDC_RS_SIGNING_ALGO = "RS256"
+
+    # The backend decrypts the introspection response before it fetches the JWKS.
+    responses.add(
+        responses.POST,
+        "https://oidc.example.com/introspect",
+        body=jose_jwe.encrypt_compact(
+            protected={"alg": "RSA-OAEP", "enc": "A256GCM"},
+            plaintext=b"not checked",
+            public_key=RSAKey.import_key(private_key.as_dict(private=False)),
+            algorithms=["RSA-OAEP", "A256GCM"],
+        ),
+    )
+    responses.add(responses.GET, "https://oidc.example.com/jwks", body=error)
+
+    response = client.get(
+        "/users/",
+        format="json",
+        HTTP_AUTHORIZATION=f"Bearer {build_authorization_bearer('some_token')}",
+    )
+
+    assert_authorization_server_unavailable(response)
+
+
+@responses.activate
+def test_resource_server_authentication_class_introspection_http_error(client, settings):
+    """An HTTP error answer of the introspection does not give a 503."""
+    set_resource_server_settings(settings)
+    responses.add(responses.POST, "https://oidc.example.com/introspect", status=500)
+
+    response = client.get(
+        "/users/",
+        format="json",
+        HTTP_AUTHORIZATION=f"Bearer {build_authorization_bearer('some_token')}",
+    )
+
+    assert response.status_code == HTTP_400_BAD_REQUEST

@@ -105,6 +105,12 @@ user: a token of an inactive local user (deactivated from the admin or merged in
 another account, for instance) is refused with a `401` response, just like DRF's
 session authentication would.
 
+### Unavailable authorization server
+
+The authorization server can fail to answer: connection refused, DNS failure or timeout.
+Then the API answers `503` with the `authorization_server_unavailable` code.
+The caller can try again later with the same token.
+
 ## Creating users on the fly
 
 By default, a token whose `sub` does not match any existing user is rejected with a 401:
