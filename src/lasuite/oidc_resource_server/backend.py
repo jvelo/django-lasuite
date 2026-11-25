@@ -6,8 +6,8 @@ from json import JSONDecodeError
 
 from django.conf import settings
 from django.contrib import auth
-from django.core.exceptions import ImproperlyConfigured, SuspiciousOperation
-from django.db import transaction
+from django.core.exceptions import ImproperlyConfigured, SuspiciousOperation, ValidationError
+from django.db import IntegrityError, transaction
 from django.utils.module_loading import import_string
 from joserfc import jwe as jose_jwe
 from joserfc import jwt as jose_jwt
@@ -137,11 +137,19 @@ class ResourceServerBackend:
 
         # A user matched by email keeps its former sub when the sub is immutable: it is
         # not the introspected user, so roll back the update of its other fields.
-        with transaction.atomic():
-            user = backend.get_or_create_user_from_claims(claims)
-            if user is not None and getattr(user, backend.OIDC_USER_SUB_FIELD) != payload["sub"]:
-                logger.warning("User matched by email does not have the introspected sub")
-                raise SuspiciousOperation("User info does not match the introspected user")
+        try:
+            with transaction.atomic():
+                user = backend.get_or_create_user_from_claims(claims)
+                if user is not None and getattr(user, backend.OIDC_USER_SUB_FIELD) != payload["sub"]:
+                    logger.warning("User matched by email does not have the introspected sub")
+                    raise SuspiciousOperation("User info does not match the introspected user")
+        except (IntegrityError, ValidationError):
+            # A parallel request can create the same user first. Then the unique sub
+            # stops this creation. Return the user that the other request created.
+            user = self.get_user(access_token, id_token, payload)
+            if user is None:
+                raise
+            logger.info("User %s was created by a parallel request", payload["sub"])
 
         return user
 
