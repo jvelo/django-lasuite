@@ -15,7 +15,7 @@ from mozilla_django_oidc.utils import parse_www_authenticate_header
 from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import HTTPError, Timeout
 from rest_framework import exceptions
-from rest_framework.status import HTTP_401_UNAUTHORIZED, HTTP_503_SERVICE_UNAVAILABLE
+from rest_framework.status import HTTP_401_UNAUTHORIZED, HTTP_503_SERVICE_UNAVAILABLE, is_server_error
 
 from .backend import ResourceServerBackend, ResourceServerImproperlyConfiguredBackend
 
@@ -26,11 +26,29 @@ AUTHORIZATION_SERVER_UNREACHABLE_ERRORS = (RequestsConnectionError, Timeout)
 
 
 class AuthorizationServerUnavailable(exceptions.APIException):
-    """The authorization server does not answer, so the access token cannot be checked."""
+    """The authorization server cannot answer, so the access token cannot be checked."""
 
     status_code = HTTP_503_SERVICE_UNAVAILABLE
     default_detail = _("The authorization server is unavailable. Try again later.")
     default_code = "authorization_server_unavailable"
+
+
+def raise_if_authorization_server_unavailable(exc):
+    """
+    Raise AuthorizationServerUnavailable when 'exc' comes from an authorization server that cannot answer.
+
+    The server cannot answer when a request gets no answer, or an answer with a 5xx status.
+    The backend wraps these errors in other errors, so the check follows the chain of causes.
+    """
+    cause = exc
+    while cause is not None:
+        server_error = (
+            isinstance(cause, HTTPError) and cause.response is not None and is_server_error(cause.response.status_code)
+        )
+        if server_error or isinstance(cause, AUTHORIZATION_SERVER_UNREACHABLE_ERRORS):
+            logger.warning("Authorization server is unavailable: %s", cause)
+            raise AuthorizationServerUnavailable from exc
+        cause = cause.__cause__
 
 
 @cache
@@ -107,20 +125,19 @@ class ResourceServerAuthentication(OIDCAuthentication):
                     data.get("error_description", "no error description in www-authenticate")
                 ) from exc
 
+            raise_if_authorization_server_unavailable(exc)
             # for all other http errors, just re-raise the exception.
             raise
-        except AUTHORIZATION_SERVER_UNREACHABLE_ERRORS as exc:
-            logger.warning("Authorization server is unavailable: %s", exc)
-            raise AuthorizationServerUnavailable from exc
+        except (SuspiciousOperation, *AUTHORIZATION_SERVER_UNREACHABLE_ERRORS) as exc:
+            raise_if_authorization_server_unavailable(exc)
+            raise
 
         try:
             user = self.backend.get_or_create_user(access_token, None, user_info)
-        except SuspiciousOperation as exc:
+        except (SuspiciousOperation, *AUTHORIZATION_SERVER_UNREACHABLE_ERRORS) as exc:
+            raise_if_authorization_server_unavailable(exc)
             logger.info("Login failed: %s", exc)
             raise exceptions.AuthenticationFailed("Login failed") from exc
-        except AUTHORIZATION_SERVER_UNREACHABLE_ERRORS as exc:
-            logger.warning("Authorization server is unavailable: %s", exc)
-            raise AuthorizationServerUnavailable from exc
 
         if not user:
             msg = "Login failed: No user found for the given access token."

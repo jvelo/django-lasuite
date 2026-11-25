@@ -24,7 +24,7 @@ and this project adheres to
 
 ### Fixed
 
-- 🐛(oidc-rs) answer 503 when the authorization server does not answer
+- 🐛(oidc-rs) answer 503 when the authorization server cannot answer
 
 ## [1.1.0] - 2026-11-18
 

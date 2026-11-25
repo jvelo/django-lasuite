@@ -107,8 +107,9 @@ session authentication would.
 
 ### Unavailable authorization server
 
-The authorization server can fail to answer: connection refused, DNS failure or timeout.
-Then the API answers `503` with the `authorization_server_unavailable` code.
+The authorization server can fail to answer: connection refused, DNS failure, timeout,
+or an answer with a `5xx` status. Then the API answers `503` with the
+`authorization_server_unavailable` code.
 The caller can try again later with the same token.
 
 ## Creating users on the fly

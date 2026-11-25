@@ -590,9 +590,13 @@ def test_jwt_resource_server_authentication_class_inactive_user(  # pylint: disa
     assert response.json()["detail"] == "Introspected user is not active"
 
 
-UNREACHABLE_ERRORS = [
-    pytest.param(requests.exceptions.ConnectionError("Connection refused"), id="connection-error"),
-    pytest.param(requests.exceptions.Timeout("Read timed out"), id="timeout"),
+# Mocked answers of an authorization server that cannot answer: no answer, or a 5xx status.
+UNAVAILABLE_ANSWERS = [
+    pytest.param({"body": requests.exceptions.ConnectionError("Connection refused")}, id="connection-error"),
+    pytest.param({"body": requests.exceptions.Timeout("Read timed out")}, id="timeout"),
+    pytest.param({"status": 500}, id="status-500"),
+    pytest.param({"status": 502}, id="status-502"),
+    pytest.param({"status": 503}, id="status-503"),
 ]
 
 
@@ -617,11 +621,11 @@ def assert_authorization_server_unavailable(response):
 
 
 @responses.activate
-@pytest.mark.parametrize("error", UNREACHABLE_ERRORS)
-def test_resource_server_authentication_class_introspection_unreachable(client, settings, caplog, error):
-    """The API answers 503 and logs a warning when the introspection request gets no answer."""
+@pytest.mark.parametrize("answer", UNAVAILABLE_ANSWERS)
+def test_resource_server_authentication_class_introspection_unavailable(client, settings, caplog, answer):
+    """The API answers 503 and logs a warning when the introspection server cannot answer."""
     set_resource_server_settings(settings)
-    responses.add(responses.POST, "https://oidc.example.com/introspect", body=error)
+    responses.add(responses.POST, "https://oidc.example.com/introspect", **answer)
 
     response = client.get(
         "/users/",
@@ -630,15 +634,16 @@ def test_resource_server_authentication_class_introspection_unreachable(client, 
     )
 
     assert_authorization_server_unavailable(response)
-    assert ("WARNING", f"Authorization server is unavailable: {error}") in [
-        (record.levelname, record.getMessage()) for record in caplog.records
-    ]
+    assert any(
+        record.levelname == "WARNING" and record.getMessage().startswith("Authorization server is unavailable: ")
+        for record in caplog.records
+    )
 
 
 @responses.activate
-@pytest.mark.parametrize("error", UNREACHABLE_ERRORS)
-def test_resource_server_authentication_class_userinfo_unreachable(client, settings, error):
-    """With OIDC_RS_CREATE_USER, the API answers 503 when the userinfo request gets no answer."""
+@pytest.mark.parametrize("answer", UNAVAILABLE_ANSWERS)
+def test_resource_server_authentication_class_userinfo_unavailable(client, settings, answer):
+    """With OIDC_RS_CREATE_USER, the API answers 503 when the userinfo server cannot answer."""
     set_resource_server_settings(settings)
     settings.OIDC_RS_CREATE_USER = True
 
@@ -654,7 +659,7 @@ def test_resource_server_authentication_class_userinfo_unreachable(client, setti
             "active": True,
         },
     )
-    responses.add(responses.GET, "https://oidc.example.com/userinfo", body=error)
+    responses.add(responses.GET, "https://oidc.example.com/userinfo", **answer)
 
     response = client.get(
         "/users/",
@@ -666,11 +671,11 @@ def test_resource_server_authentication_class_userinfo_unreachable(client, setti
 
 
 @responses.activate
-@pytest.mark.parametrize("error", UNREACHABLE_ERRORS)
-def test_jwt_resource_server_authentication_class_jwks_unreachable(  # pylint: disable=unused-argument
-    client, jwt_resource_server_backend, settings, error
+@pytest.mark.parametrize("answer", UNAVAILABLE_ANSWERS)
+def test_jwt_resource_server_authentication_class_jwks_unavailable(  # pylint: disable=unused-argument
+    client, jwt_resource_server_backend, settings, answer
 ):
-    """The API answers 503 when the JWKS request of the JWT backend gets no answer."""
+    """The API answers 503 when the JWKS server of the JWT backend cannot answer."""
     set_resource_server_settings(settings)
     private_key = RSAKey.generate_key(private=True)
     settings.OIDC_RS_PRIVATE_KEY_STR = private_key.as_pem(private=True).decode()
@@ -690,7 +695,7 @@ def test_jwt_resource_server_authentication_class_jwks_unreachable(  # pylint: d
             algorithms=["RSA-OAEP", "A256GCM"],
         ),
     )
-    responses.add(responses.GET, "https://oidc.example.com/jwks", body=error)
+    responses.add(responses.GET, "https://oidc.example.com/jwks", **answer)
 
     response = client.get(
         "/users/",
@@ -702,10 +707,10 @@ def test_jwt_resource_server_authentication_class_jwks_unreachable(  # pylint: d
 
 
 @responses.activate
-def test_resource_server_authentication_class_introspection_http_error(client, settings):
-    """An HTTP error answer of the introspection does not give a 503."""
+def test_resource_server_authentication_class_introspection_client_error(client, settings):
+    """A 4xx answer of the introspection does not give a 503."""
     set_resource_server_settings(settings)
-    responses.add(responses.POST, "https://oidc.example.com/introspect", status=500)
+    responses.add(responses.POST, "https://oidc.example.com/introspect", status=403)
 
     response = client.get(
         "/users/",
@@ -714,3 +719,32 @@ def test_resource_server_authentication_class_introspection_http_error(client, s
     )
 
     assert response.status_code == HTTP_400_BAD_REQUEST
+
+
+@responses.activate
+def test_resource_server_authentication_class_userinfo_client_error(client, settings):
+    """With OIDC_RS_CREATE_USER, a 4xx answer of the userinfo gives a 401."""
+    set_resource_server_settings(settings)
+    settings.OIDC_RS_CREATE_USER = True
+
+    responses.add(
+        responses.POST,
+        "https://oidc.example.com/introspect",
+        json={
+            "iss": "https://oidc.example.com",
+            "aud": "some_client_id",
+            "sub": "very-specific-sub",
+            "client_id": "some_service_provider",
+            "scope": "openid groups",
+            "active": True,
+        },
+    )
+    responses.add(responses.GET, "https://oidc.example.com/userinfo", status=401)
+
+    response = client.get(
+        "/users/",
+        format="json",
+        HTTP_AUTHORIZATION=f"Bearer {build_authorization_bearer('some_token')}",
+    )
+
+    assert response.status_code == HTTP_401_UNAUTHORIZED
