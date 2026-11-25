@@ -125,6 +125,30 @@ token must carry the scopes needed for the expected claims (e.g. `email`). It is
 same rules as a regular login.
 If the userinfo `sub` does not match the introspected one, authentication fails.
 
+### Limiting user creation
+
+The backend calls `can_create_user(payload)` when no user matches the token's `sub`.
+`payload` is the introspection response. The default answer is `OIDC_RS_CREATE_USER`.
+When the answer is `False`, the backend does not request the userinfo endpoint and does not
+create a user.
+
+Override it to add your own rule. For example, create users only for some client applications:
+
+```python
+from django.conf import settings
+
+from lasuite.oidc_resource_server.backend import ResourceServerBackend
+
+
+class MyResourceServerBackend(ResourceServerBackend):
+    def can_create_user(self, payload):
+        if self.token_origin_audience not in settings.MY_ALLOWED_AUDIENCES:
+            return False
+        return super().can_create_user(payload)
+```
+
+Then set `OIDC_RS_BACKEND_CLASS` to the path of this class.
+
 ## Advanced: JWT Resource Server
 
 For JWT-based introspection (RFC 9701), use the `JWTResourceServerBackend`:

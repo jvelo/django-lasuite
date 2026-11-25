@@ -12,6 +12,7 @@ and this project adheres to
 
 - ✨(oidc) add the `migrate_users_to_accounts` command
 - ✨(oidc) store the issuer of the sub at login with `OIDC_USER_ISSUER_FIELD`
+- ✨(oidc-rs) add the `can_create_user` hook to limit the creation of users
 
 ### Changed
 

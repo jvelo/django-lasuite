@@ -109,14 +109,14 @@ class ResourceServerBackend:
         """
         Maintain API compatibility with OIDCAuthentication class from mozilla-django-oidc.
 
-        When `OIDC_RS_CREATE_USER` is enabled and no user matches the introspected
-        sub, the user is fetched or created by the `OIDC_RS_USER_CREATION_BACKEND_CLASS`
+        When no user matches the introspected sub and `can_create_user` returns True,
+        the user is fetched or created by the `OIDC_RS_USER_CREATION_BACKEND_CLASS`
         backend, with the same rules as a regular OIDC login. The introspection response
         rarely contains the user's email or name, so that backend requests the
         userinfo endpoint with the same access token.
         """
         user = self.get_user(access_token, id_token, payload)
-        if user is not None or not self._create_user:
+        if user is not None or not self.can_create_user(payload):
             return user
 
         backend = import_string(self._user_creation_backend_class)()
@@ -144,6 +144,17 @@ class ResourceServerBackend:
                 raise SuspiciousOperation("User info does not match the introspected user")
 
         return user
+
+    # pylint: disable=unused-argument
+    def can_create_user(self, payload):
+        """
+        Tell if the token can create the user of an unknown sub.
+
+        The default answer is the value of `OIDC_RS_CREATE_USER`. Override this method
+        to add a rule, for example on `self.token_origin_audience`. The 'payload' parameter
+        contains the introspected information.
+        """
+        return self._create_user
 
     # pylint: disable=unused-argument
     def get_user(self, access_token, id_token, payload):
