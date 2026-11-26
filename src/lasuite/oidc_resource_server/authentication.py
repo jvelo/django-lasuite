@@ -50,6 +50,14 @@ def is_authorization_server_unavailable(exc):
     return False
 
 
+def raise_if_authorization_server_unavailable(exc):
+    """Log a warning and raise AuthorizationServerUnavailable when the authorization server is unavailable."""
+    if not is_authorization_server_unavailable(exc):
+        return
+    logger.warning("Authorization server is unavailable: %s", exc)
+    raise AuthorizationServerUnavailable from exc
+
+
 @cache
 def get_resource_server_backend() -> type[ResourceServerBackend]:
     """Return the resource server backend class based on the settings."""
@@ -111,36 +119,33 @@ class ResourceServerAuthentication(OIDCAuthentication):
         # and retrieve user info.
         try:
             user_info = self.backend.get_user_info_with_introspection(access_token)
-        except (HTTPError, SuspiciousOperation, *AUTHORIZATION_SERVER_UNREACHABLE_ERRORS) as exc:
-            if is_authorization_server_unavailable(exc):
-                logger.warning("Authorization server is unavailable: %s", exc)
-                raise AuthorizationServerUnavailable from exc
+        except HTTPError as exc:
+            resp = exc.response
 
             # If the oidc provider returns 401, it means the token is invalid or that
             # the introspection is not allowed.
             # In that case, we want to return the upstream error message (which
             # we can get from the www-authentication header) in the response.
-            if isinstance(exc, HTTPError):
-                resp = exc.response
-                if resp.status_code == HTTP_401_UNAUTHORIZED and "www-authenticate" in resp.headers:
-                    data = parse_www_authenticate_header(resp.headers["www-authenticate"])
-                    raise exceptions.AuthenticationFailed(
-                        data.get("error_description", "no error description in www-authenticate")
-                    ) from exc
+            if resp.status_code == HTTP_401_UNAUTHORIZED and "www-authenticate" in resp.headers:
+                data = parse_www_authenticate_header(resp.headers["www-authenticate"])
+                raise exceptions.AuthenticationFailed(
+                    data.get("error_description", "no error description in www-authenticate")
+                ) from exc
 
-            # for all other errors, just re-raise the exception.
+            raise_if_authorization_server_unavailable(exc)
+            # for all other http errors, just re-raise the exception.
+            raise
+        except (SuspiciousOperation, *AUTHORIZATION_SERVER_UNREACHABLE_ERRORS) as exc:
+            raise_if_authorization_server_unavailable(exc)
             raise
 
         try:
             user = self.backend.get_or_create_user(access_token, None, user_info)
-        except (HTTPError, SuspiciousOperation, *AUTHORIZATION_SERVER_UNREACHABLE_ERRORS) as exc:
-            if is_authorization_server_unavailable(exc):
-                logger.warning("Authorization server is unavailable: %s", exc)
-                raise AuthorizationServerUnavailable from exc
-
-            if isinstance(exc, HTTPError):
-                raise
-
+        except HTTPError as exc:
+            raise_if_authorization_server_unavailable(exc)
+            raise
+        except (SuspiciousOperation, *AUTHORIZATION_SERVER_UNREACHABLE_ERRORS) as exc:
+            raise_if_authorization_server_unavailable(exc)
             logger.info("Login failed: %s", exc)
             raise exceptions.AuthenticationFailed("Login failed") from exc
 
