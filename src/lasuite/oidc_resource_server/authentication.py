@@ -39,6 +39,8 @@ def raise_if_authorization_server_unavailable(exc):
 
     The server cannot answer when a request gets no answer, or an answer with a 5xx status.
     The backend wraps these errors in other errors, so the check follows the chain of causes.
+    A project backend can wrap them in its own errors too. Thus the check does not rely on
+    a dedicated exception from the backend.
     """
     cause = exc
     while cause is not None:
