@@ -591,14 +591,20 @@ def test_jwt_resource_server_authentication_class_inactive_user(  # pylint: disa
 
 
 # Mocked answers of an authorization server that cannot answer: transport failures or a 5xx status.
+CONNECTION_ERROR_ANSWER = pytest.param(
+    {"body": requests.exceptions.ConnectionError("Connection refused")}, id="connection-error"
+)
+STATUS_503_ANSWER = pytest.param({"status": 503}, id="status-503")
 UNAVAILABLE_ANSWERS = [
-    pytest.param({"body": requests.exceptions.ConnectionError("Connection refused")}, id="connection-error"),
+    CONNECTION_ERROR_ANSWER,
     pytest.param({"body": requests.exceptions.Timeout("Read timed out")}, id="timeout"),
     pytest.param({"body": requests.exceptions.ChunkedEncodingError("Connection broken")}, id="cut-body"),
     pytest.param({"status": 500}, id="status-500"),
     pytest.param({"status": 502}, id="status-502"),
-    pytest.param({"status": 503}, id="status-503"),
+    STATUS_503_ANSWER,
 ]
+# One transport failure and one 5xx status, for the requests after the introspection.
+SHORT_UNAVAILABLE_ANSWERS = [CONNECTION_ERROR_ANSWER, STATUS_503_ANSWER]
 
 
 @pytest.fixture(name="resource_server_settings")
@@ -663,7 +669,7 @@ def test_resource_server_authentication_class_introspection_unavailable(client, 
 
 @responses.activate
 @pytest.mark.usefixtures("resource_server_settings")
-@pytest.mark.parametrize("answer", UNAVAILABLE_ANSWERS)
+@pytest.mark.parametrize("answer", SHORT_UNAVAILABLE_ANSWERS)
 def test_resource_server_authentication_class_userinfo_unavailable(client, settings, answer):
     """With OIDC_RS_CREATE_USER, the API answers 503 when the userinfo server cannot answer."""
     settings.OIDC_RS_CREATE_USER = True
@@ -675,7 +681,7 @@ def test_resource_server_authentication_class_userinfo_unavailable(client, setti
 
 @responses.activate
 @pytest.mark.usefixtures("resource_server_settings", "jwt_resource_server_backend")
-@pytest.mark.parametrize("answer", UNAVAILABLE_ANSWERS)
+@pytest.mark.parametrize("answer", SHORT_UNAVAILABLE_ANSWERS)
 def test_jwt_resource_server_authentication_class_jwks_unavailable(client, settings, answer):
     """The API answers 503 when the JWKS server of the JWT backend cannot answer."""
     private_key = RSAKey.generate_key(private=True)
