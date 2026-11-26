@@ -748,3 +748,43 @@ def test_resource_server_authentication_class_userinfo_client_error(client, sett
     )
 
     assert response.status_code == HTTP_401_UNAUTHORIZED
+
+
+@responses.activate
+@pytest.mark.parametrize("status", [404, 503])
+def test_resource_server_authentication_class_get_or_create_user_http_error(client, settings, monkeypatch, status):
+    """A direct HTTPError of get_or_create_user gives a 503 for a 5xx status, and propagates otherwise."""
+    set_resource_server_settings(settings)
+    responses.add(
+        responses.POST,
+        "https://oidc.example.com/introspect",
+        json={
+            "iss": "https://oidc.example.com",
+            "aud": "some_client_id",
+            "sub": "very-specific-sub",
+            "client_id": "some_service_provider",
+            "scope": "openid groups",
+            "active": True,
+        },
+    )
+
+    def get_or_create_user(*args, **kwargs):
+        response = requests.Response()
+        response.status_code = status
+        raise requests.exceptions.HTTPError(response=response)
+
+    monkeypatch.setattr(get_resource_server_backend(), "get_or_create_user", get_or_create_user)
+
+    def call_api():
+        return client.get(
+            "/users/",
+            format="json",
+            HTTP_AUTHORIZATION=f"Bearer {build_authorization_bearer('some_token')}",
+        )
+
+    if status == 404:
+        with pytest.raises(requests.exceptions.HTTPError):
+            call_api()
+        return
+
+    assert_authorization_server_unavailable(call_api())

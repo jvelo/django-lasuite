@@ -134,6 +134,9 @@ class ResourceServerAuthentication(OIDCAuthentication):
 
         try:
             user = self.backend.get_or_create_user(access_token, None, user_info)
+        except HTTPError as exc:
+            raise_if_authorization_server_unavailable(exc)
+            raise
         except (SuspiciousOperation, *AUTHORIZATION_SERVER_UNREACHABLE_ERRORS) as exc:
             raise_if_authorization_server_unavailable(exc)
             logger.info("Login failed: %s", exc)

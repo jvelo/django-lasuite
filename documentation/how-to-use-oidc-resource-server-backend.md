@@ -98,19 +98,15 @@ class SecureAPIView(APIView):
 5. Backend checks that the user matching the token's `sub` is active
 6. If valid, request is processed; otherwise, authentication fails
 
+If the authorization server does not answer, or answers with a `5xx` status, the API
+answers `503`, so the caller can try again later.
+
 ### Inactive users
 
 The `active` claim of the introspection response is about the token, not about the
 user: a token of an inactive local user (deactivated from the admin or merged into
 another account, for instance) is refused with a `401` response, just like DRF's
 session authentication would.
-
-### Unavailable authorization server
-
-The authorization server can fail to answer: connection refused, DNS failure, timeout,
-or an answer with a `5xx` status. Then the API answers `503` with the
-`authorization_server_unavailable` code.
-The caller can try again later with the same token.
 
 ## Creating users on the fly
 
