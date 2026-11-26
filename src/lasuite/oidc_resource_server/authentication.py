@@ -33,22 +33,21 @@ class AuthorizationServerUnavailable(exceptions.APIException):
     default_code = "authorization_server_unavailable"
 
 
-def raise_if_authorization_server_unavailable(exc):
+def is_authorization_server_unavailable(exc):
     """
-    Raise AuthorizationServerUnavailable for a transport failure or an HTTP 5xx error.
+    Return True when 'exc' comes from a transport failure or an HTTP 5xx error.
 
     The backend wraps request errors in SuspiciousOperation.
     Thus the check reads 'exc' and its explicit '__cause__' chain.
     """
     cause = exc
     while cause is not None:
-        server_error = (
-            isinstance(cause, HTTPError) and cause.response is not None and is_server_error(cause.response.status_code)
-        )
-        if server_error or isinstance(cause, AUTHORIZATION_SERVER_UNREACHABLE_ERRORS):
-            logger.warning("Authorization server is unavailable: %s", cause)
-            raise AuthorizationServerUnavailable from exc
+        if isinstance(cause, AUTHORIZATION_SERVER_UNREACHABLE_ERRORS):
+            return True
+        if isinstance(cause, HTTPError) and cause.response is not None and is_server_error(cause.response.status_code):
+            return True
         cause = cause.__cause__
+    return False
 
 
 @cache
@@ -112,33 +111,36 @@ class ResourceServerAuthentication(OIDCAuthentication):
         # and retrieve user info.
         try:
             user_info = self.backend.get_user_info_with_introspection(access_token)
-        except HTTPError as exc:
-            resp = exc.response
+        except (HTTPError, SuspiciousOperation, *AUTHORIZATION_SERVER_UNREACHABLE_ERRORS) as exc:
+            if is_authorization_server_unavailable(exc):
+                logger.warning("Authorization server is unavailable: %s", exc)
+                raise AuthorizationServerUnavailable from exc
 
             # If the oidc provider returns 401, it means the token is invalid or that
             # the introspection is not allowed.
             # In that case, we want to return the upstream error message (which
             # we can get from the www-authentication header) in the response.
-            if resp.status_code == HTTP_401_UNAUTHORIZED and "www-authenticate" in resp.headers:
-                data = parse_www_authenticate_header(resp.headers["www-authenticate"])
-                raise exceptions.AuthenticationFailed(
-                    data.get("error_description", "no error description in www-authenticate")
-                ) from exc
+            if isinstance(exc, HTTPError):
+                resp = exc.response
+                if resp.status_code == HTTP_401_UNAUTHORIZED and "www-authenticate" in resp.headers:
+                    data = parse_www_authenticate_header(resp.headers["www-authenticate"])
+                    raise exceptions.AuthenticationFailed(
+                        data.get("error_description", "no error description in www-authenticate")
+                    ) from exc
 
-            raise_if_authorization_server_unavailable(exc)
-            # for all other http errors, just re-raise the exception.
-            raise
-        except (SuspiciousOperation, *AUTHORIZATION_SERVER_UNREACHABLE_ERRORS) as exc:
-            raise_if_authorization_server_unavailable(exc)
+            # for all other errors, just re-raise the exception.
             raise
 
         try:
             user = self.backend.get_or_create_user(access_token, None, user_info)
-        except HTTPError as exc:
-            raise_if_authorization_server_unavailable(exc)
-            raise
-        except (SuspiciousOperation, *AUTHORIZATION_SERVER_UNREACHABLE_ERRORS) as exc:
-            raise_if_authorization_server_unavailable(exc)
+        except (HTTPError, SuspiciousOperation, *AUTHORIZATION_SERVER_UNREACHABLE_ERRORS) as exc:
+            if is_authorization_server_unavailable(exc):
+                logger.warning("Authorization server is unavailable: %s", exc)
+                raise AuthorizationServerUnavailable from exc
+
+            if isinstance(exc, HTTPError):
+                raise
+
             logger.info("Login failed: %s", exc)
             raise exceptions.AuthenticationFailed("Login failed") from exc
 
