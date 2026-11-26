@@ -594,6 +594,7 @@ def test_jwt_resource_server_authentication_class_inactive_user(  # pylint: disa
 UNAVAILABLE_ANSWERS = [
     pytest.param({"body": requests.exceptions.ConnectionError("Connection refused")}, id="connection-error"),
     pytest.param({"body": requests.exceptions.Timeout("Read timed out")}, id="timeout"),
+    pytest.param({"body": requests.exceptions.ChunkedEncodingError("Connection broken")}, id="cut-body"),
     pytest.param({"status": 500}, id="status-500"),
     pytest.param({"status": 502}, id="status-502"),
     pytest.param({"status": 503}, id="status-503"),

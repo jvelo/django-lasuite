@@ -12,8 +12,8 @@ from django.utils.module_loading import import_string
 from django.utils.translation import gettext_lazy as _
 from mozilla_django_oidc.contrib.drf import OIDCAuthentication
 from mozilla_django_oidc.utils import parse_www_authenticate_header
+from requests.exceptions import ChunkedEncodingError, HTTPError, Timeout
 from requests.exceptions import ConnectionError as RequestsConnectionError
-from requests.exceptions import HTTPError, Timeout
 from rest_framework import exceptions
 from rest_framework.status import HTTP_401_UNAUTHORIZED, HTTP_503_SERVICE_UNAVAILABLE, is_server_error
 
@@ -21,8 +21,8 @@ from .backend import ResourceServerBackend, ResourceServerImproperlyConfiguredBa
 
 logger = logging.getLogger(__name__)
 
-# Errors of a request that gets no answer from the authorization server.
-AUTHORIZATION_SERVER_UNREACHABLE_ERRORS = (RequestsConnectionError, Timeout)
+# Errors of a request that gets no answer, or a cut answer, from the authorization server.
+AUTHORIZATION_SERVER_UNREACHABLE_ERRORS = (RequestsConnectionError, Timeout, ChunkedEncodingError)
 
 
 class AuthorizationServerUnavailable(exceptions.APIException):
