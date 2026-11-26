@@ -21,12 +21,12 @@ from .backend import ResourceServerBackend, ResourceServerImproperlyConfiguredBa
 
 logger = logging.getLogger(__name__)
 
-# Errors of a request that gets no answer, or a cut answer, from the authorization server.
+# Transport failures, including cut response bodies.
 AUTHORIZATION_SERVER_UNREACHABLE_ERRORS = (RequestsConnectionError, Timeout, ChunkedEncodingError)
 
 
 class AuthorizationServerUnavailable(exceptions.APIException):
-    """The authorization server cannot answer, so the access token cannot be checked."""
+    """Authentication cannot complete because the authorization server is unavailable."""
 
     status_code = HTTP_503_SERVICE_UNAVAILABLE
     default_detail = _("The authorization server is unavailable. Try again later.")
@@ -35,12 +35,10 @@ class AuthorizationServerUnavailable(exceptions.APIException):
 
 def raise_if_authorization_server_unavailable(exc):
     """
-    Raise AuthorizationServerUnavailable when 'exc' comes from an authorization server that cannot answer.
+    Raise AuthorizationServerUnavailable for a transport failure or an HTTP 5xx error.
 
-    The server cannot answer when a request gets no answer, or an answer with a 5xx status.
-    The backend wraps these errors in other errors, so the check follows the chain of causes.
-    A project backend can wrap them in its own errors too. Thus the check does not rely on
-    a dedicated exception from the backend.
+    The backend wraps request errors in SuspiciousOperation.
+    Thus the check reads 'exc' and its explicit '__cause__' chain.
     """
     cause = exc
     while cause is not None:
